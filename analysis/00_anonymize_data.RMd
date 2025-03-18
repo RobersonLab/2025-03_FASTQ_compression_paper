@@ -1,0 +1,205 @@
+---
+title: "00 - anonymize data"
+author: "Eli Roberson"
+created: "2025-03-14"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+# Setup
+```{r libraries}
+library( here )
+library( tidyverse )
+library( uuid )
+```
+
+```{r dirs}
+dir.create( path = here( 'results', 'figures' ), 
+            showWarnings = FALSE, 
+            recursive = TRUE )
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	fig.path = paste0( here( 'results', 'figures' ), '/' ),
+	fig.keep = 'all',
+	dpi = 300,
+	fig.width = 11,
+	fig.height = 8.5
+)
+```
+
+```{r local_functions}
+read_quietly_tsv <- function( filepath ) {
+  tmp <- read_tsv( file = filepath, 
+            col_names = FALSE, 
+            progress = FALSE,
+            show_col_types = FALSE ) %>%
+    mutate( filename = basename( filepath ) ) %>%
+    return( . )
+}
+
+read_quietly_delim <- function( filepath ) {
+  tmp <- read_delim( file = filepath, 
+                     delim = '  ',
+                     col_names = FALSE, 
+                     progress = FALSE,
+                     show_col_types = FALSE ) %>%
+    mutate( filename = basename( filepath ) ) %>%
+    return( . )
+}
+```
+
+```{r md5}
+md5_raw <- list.files( path = here( 'output',
+                                    'md5_sums' ),
+                       full.names = TRUE ) %>%
+  map_dfr( .f = read_quietly_delim ) %>%
+  select( -X2 ) %>%
+  dplyr::rename( md5sum = X1 ) 
+```
+
+```{r md5_adjust}
+md5 <- md5_raw %>%
+  mutate( keeper = case_when(
+    str_detect( string = filename, pattern = "^incorrect" ) ~ "No",
+    TRUE ~ "Yes" ) ) %>%
+  filter( keeper == "Yes" ) %>%
+  select( -keeper ) %>%
+  mutate( filebase = filename ) %>%
+  mutate( filebase = str_replace( pattern = ".md5$",
+                                  replacement = "",
+                                  string = filebase ) ) %>%
+  mutate( filebase = str_replace( pattern = "_raw$",
+                                  replacement = "",
+                                  string = filebase ) ) %>%
+  mutate( filebase = str_replace( pattern = "_zst$",
+                                  replacement = "",
+                                  string = filebase ) ) %>%
+  mutate( filebase = str_replace( pattern = "_fastq$",
+                                  replacement = "",
+                                  string = filebase ) ) %>%
+  mutate( filebase = str_replace( pattern = "_sequence.txt$",
+                                  replacement = "",
+                                  string = filebase ) ) %>%
+  mutate( filebase = str_replace( pattern = "_fqs",
+                                  replacement = "",
+                                  string = filebase ) ) %>%
+  mutate( compression = case_when(
+    str_detect( pattern = "_raw.md5", string = filename ) ~ "None",
+    str_detect( pattern = "_zst.md5", string = filename ) ~ "Zstd",
+    TRUE ~ "Error" ) ) %>%
+  select( -filename ) %>%
+  pivot_wider( names_from = 'compression',
+               values_from = 'md5sum',
+               id_cols = 'filebase' ) %>%
+  mutate( md5_match = case_when(
+    None == Zstd ~ 'Yes',
+    TRUE ~ 'No'
+  ))
+
+with( md5, table( md5_match ) )
+
+rm( md5_raw )
+```
+
+```{r read}
+file_sizes_raw <- list.files( path = here( 'output',
+                                           'file_sizes' ),
+                              full.names = TRUE ) %>%
+  map_dfr( .f = read_quietly_tsv ) %>%
+  select( -X2 ) %>%
+  dplyr::rename( fsize = X1 )
+```
+
+```{r adjust}
+file_sizes = file_sizes_raw %>%
+  mutate( keeper = case_when(
+    str_detect( string = filename, pattern = "^incorrect" ) ~ "No",
+    TRUE ~ "Yes" ) ) %>%
+  filter( keeper == "Yes" ) %>%
+  select( -keeper ) %>%
+  mutate( compression = case_when(
+    str_detect( pattern = "_raw.txt", string = filename ) ~ "None",
+    str_detect( pattern = "_zip.txt", string = filename ) ~ "Gzip",
+    str_detect( pattern = "_zst.txt", string = filename ) ~ "Zstd",
+    TRUE ~ "Error" ) ) %>%
+  mutate( filebase = str_replace( string = filename,
+                                  pattern = "_sequence_txt_",
+                                  replacement = "" ) ) %>%
+  mutate( filebase = str_replace( string = filebase,
+                                  pattern = "_fastq_",
+                                  replacement = "" ) ) %>%
+  mutate( filebase = str_replace( string = filebase,
+                                  pattern = "_fqs_",
+                                  replacement = "" ) ) %>%
+  mutate( filebase = str_replace( string = filebase,
+                                  pattern = "size_raw.txt$",
+                                  replacement = "" ) ) %>%
+  mutate( filebase = str_replace( string = filebase,
+                                  pattern = "size_zip.txt",
+                                  replacement = "" ) ) %>%
+  mutate( filebase = str_replace( string = filebase,
+                                  pattern = "size_zst.txt",
+                                  replacement = "" ) ) %>%
+  select( -filename ) %>%
+  pivot_wider( values_from = fsize, 
+               names_from = compression, 
+               id_cols = filebase ) %>%
+  mutate( None_fract = 1.00 ) %>%
+  mutate( Gzip_fract = Gzip / None ) %>%
+  mutate( Zst_fract = Zstd / None )
+
+rm( file_sizes_raw )
+```
+
+```{r set_uuids}
+basenames <- intersect( md5$filebase, file_sizes$filebase )
+
+if ( !file.exists( here( 'results', 'uuid_filebase_map.tsv.gz' ) ) ) {
+  uuid_filebase_map <- tibble( filebase = basenames )
+  uuid_filebase_map$uuid = UUIDgenerate( use.time = FALSE, 
+                            n = length( basenames ), 
+                            output = 'string' )
+  
+  write_tsv( x = uuid_filebase_map, 
+             file = here( 'results', 
+                          'uuid_filebase_map.tsv.gz' ) )
+} else {
+  uuid_filebase_map <- read_tsv( 
+    file = here( 'results',
+                 'uuid_filebase_map.tsv.gz' ) )
+}
+```
+
+```{r anonymize_write_md5}
+md5 <- full_join( x = uuid_filebase_map,
+                  y = md5,
+                  by = 'filebase' )
+
+md5 %>%
+  select( -filebase ) %>%
+  write_tsv( file = here( 'results',
+                          'combined_md5.tsv.gz' ) )
+```
+
+```{r anonymize_write_filesize}
+file_sizes <- full_join( x = uuid_filebase_map,
+                         y = file_sizes, 
+                         by = 'filebase' )
+
+file_sizes %>%
+  select( -filebase ) %>%
+  write_tsv( file = here( 'results',
+                          'combined_filesize.tsv.gz' ) )
+```
+
+# Session info
+```{r versions}
+Sys.time()
+getwd()
+sessionInfo()
+```

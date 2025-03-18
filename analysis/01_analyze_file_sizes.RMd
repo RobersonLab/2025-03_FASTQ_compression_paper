@@ -1,0 +1,219 @@
+---
+title: "01 - analyze sizes"
+author: "Eli Roberson"
+created: "2025-03-14"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+# Setup
+```{r libraries}
+library( here )
+library( tidyverse )
+library( reshape2 )
+library( broom )
+```
+
+```{r dirs}
+dir.create( path = here( 'results', 'figures' ), 
+            showWarnings = FALSE, 
+            recursive = TRUE )
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	fig.path = paste0( here( 'results', 'figures' ), '/' ),
+	fig.keep = 'all',
+	dpi = 300,
+	fig.width = 11,
+	fig.height = 8.5
+)
+```
+
+```{r sourcing}
+source( file = here( 'src', 'shared_functions.R' ) )
+```
+
+```{r read}
+# if the file doesn't exist then download it from FigShare
+if ( !file.exists( here( 'results',
+                         'combined_filesize.tsv.gz' ) ) ) {
+  url = 'https://figshare.com/ndownloader/files/53070965'
+  dest = here( 'results',
+               'combined_filesize.tsv.gz' )
+  download.file( url = url, 
+                 destfile = dest, 
+                 mode = 'wb' )
+}
+
+file_sizes <- read_tsv( file = here( 'results',
+                                     'combined_filesize.tsv.gz' ) )
+```
+
+```{r file_gb_sizes}
+gb_sizes <- file_sizes %>%
+  select( uuid, None ) %>%
+  mutate( gbsize = None / ( 1024 * 1024 * 1024 ) )
+```
+
+```{r size}
+raw_bytes = sum( file_sizes$None )
+raw_kb = raw_bytes / 1024
+raw_mb = raw_kb / 1024
+raw_gb = raw_mb / 1024
+raw_tb = raw_gb / 1024
+
+gzip_bytes = sum( file_sizes$Gzip )
+gzip_kb = gzip_bytes / 1024
+gzip_mb = gzip_kb / 1024
+gzip_gb = gzip_mb / 1024
+gzip_tb = gzip_gb / 1024
+
+zstd_bytes = sum( file_sizes$Zstd )
+zstd_kb = zstd_bytes / 1024
+zstd_mb = zstd_kb / 1024
+zstd_gb = zstd_mb / 1024
+zstd_tb = zstd_gb / 1024
+```
+
+Number of FASTQ files: `r nrow( file_sizes)`
+
+Total TB FASTQ files: `r round( raw_tb, 2 )`
+
+Total TB Gzip files: `r round( gzip_tb, 2 )`
+
+Total TB Zstd files: `r round( zstd_tb, 2 )`
+
+```{r stats}
+melted_fraction <- file_sizes %>%
+  select( uuid, None_fract, Gzip_fract, Zst_fract ) %>%
+  melt( . ) %>%
+  mutate( variable = factor( variable,
+                             levels = c( "None_fract",
+                                         "Gzip_fract",
+                                         "Zst_fract" ) ) )
+
+gen_stats = melted_fraction %>%
+  dplyr::group_by( variable ) %>%
+  summarise(
+    mean_val = mean( value ),
+    sd_val = sd( value ),
+    med_val = median( value ),
+    mad_val = mad( value )
+  )
+```
+
+```{r fraction_filesize}
+melted_fraction_plot <- melted_fraction %>%
+  mutate( variable = as.character( variable ) ) %>%
+  mutate( variable = case_when(
+    variable == 'None_fract' ~ 'Raw text',
+    variable == 'Gzip_fract' ~ 'gzip',
+    variable == 'Zst_fract' ~ 'zstandard',
+    TRUE ~ 'ERROR'
+  )) %>%
+  mutate( variable = factor( variable,
+                             levels = c( 'Raw text',
+                                         'gzip',
+                                         'zstandard' ) ) )
+
+ggplot( data = melted_fraction_plot, 
+        mapping = aes( x = variable,
+                       y = value,
+                       group = uuid ) ) +
+  theme_bw() +
+  gg_bigger_texts +
+  coord_cartesian( ylim = c( 0.0, 1.0 ) ) +
+  gg_no_x_label +
+  ylab( 'Fraction of raw size' ) +
+  geom_line() +
+  geom_point()
+```
+
+```{r actual_filesize}
+melted_actual <- file_sizes %>%
+  select( uuid, None, Gzip, Zstd ) %>%
+  melt( . ) %>%
+  mutate( variable = factor( variable,
+                             levels = c( "None",
+                                         "Gzip",
+                                         "Zstd" ) ) )
+
+ggplot( data = melted_actual, mapping = aes( x = variable,
+                                      y = value,
+                                      group = uuid ) ) +
+  geom_line() +
+  geom_point()
+```
+
+```{r fraction_with_rawsize}
+fraction_with_start <- melted_fraction_plot %>%
+  inner_join( x = .,
+              y = gb_sizes,
+              by = 'uuid' )
+
+ggplot( data = fraction_with_start, 
+        mapping = aes( x = variable,
+                       y = value,
+                       group = uuid ) ) +
+  theme_bw() +
+  gg_bigger_texts +
+  coord_cartesian( ylim = c( 0.0, 1.0 ) ) +
+  gg_no_x_label +
+  ylab( 'Fraction of raw size' ) +
+  geom_line() +
+  geom_point( size = 3, alpha = 0.8, aes( color = gbsize ) ) +
+  scale_color_viridis_c() +
+  labs( color = "Raw (GB)" )
+```
+
+```{r fraction_drop_raw}
+fraction_with_start <- fraction_with_start %>%
+  filter( variable != 'Raw text' )
+
+ggplot( data = fraction_with_start, 
+        mapping = aes( x = variable,
+                       y = value,
+                       group = uuid ) ) +
+  theme_bw() +
+  gg_bigger_texts +
+  coord_cartesian( ylim = c( 0.0, 0.40 ) ) +
+  gg_no_x_label +
+  ylab( 'Fraction of raw size' ) +
+  geom_line() +
+  geom_point( size = 3.5, alpha = 0.6, aes( color = gbsize ) ) +
+  #geom_jitter( size = 3.5, alpha = 0.85, aes( color = gbsize ), height = 0, width = 0.015 ) +
+  scale_color_viridis_c() +
+  labs( color = "Raw (GB)" )
+```
+
+```{r glms}
+sizes <- select( file_sizes, uuid, None ) %>%
+  dplyr::rename( raw_size = None ) %>%
+  distinct( . )
+
+for_model <- melted_fraction_plot %>%
+  filter( variable != "Raw text") %>%
+  full_join( y = sizes, by = 'uuid' )
+
+model_out <- glm(
+  data = for_model, 
+  formula = value ~ factor( variable ) + raw_size + factor( variable ) * raw_size )
+
+model_out
+
+summary( model_out )
+
+tidied <- tidy( model_out )
+tidied
+```
+
+# Session info
+```{r versions}
+Sys.time()
+getwd()
+sessionInfo()
+```
